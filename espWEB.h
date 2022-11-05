@@ -21,7 +21,7 @@ int getGroupStatus(char * groupName);
  *  @param body JSON body, e.g. for configuring routines/schedules
  *  @return returns JSONVar for accessing the returned JSON
  */ 
-JSONVar postRequest(char * path, char * body);
+int postRequest(char * path, char * body, JSONVar& jsonVar);
 
 /*
  * make a getRequest
@@ -57,7 +57,7 @@ int getScheduleID(char * scheduleName);
  * @param body the JSON body
  * @param jsonVar variable for returns
  */
-int putRequest(char * path, char * body, JSONVar * jsonVar);
+int putRequest(char * path, char * body, JSONVar& jsonVar);
 
 /*
  * method for updating/creating a schedule
@@ -124,16 +124,14 @@ void configureTime();
  */
 void registerInputs();
 
-/*
- * update the alarm based on current rotary State
- */
-void updateAlarm();
+void updateAlarmDisplay();
 
+void updateRemoteAlarm();
 
 //String serverName = "http://philipshuebridge/api/8LZjhVl65zPrJiqEPTWkmRaggDv1YzJQBxi1GhcZ/groups/";
 
-
-const char * root_ca = \ 
+//irgendein ROOT_CA
+/*const char * root_ca = \ 
 "-----BEGIN CERTIFICATE-----\n" \
 "MIIFVzCCAz+gAwIBAgINAgPlk28xsBNJiGuiFzANBgkqhkiG9w0BAQwFADBHMQsw\n" \
 "CQYDVQQGEwJVUzEiMCAGA1UEChMZR29vZ2xlIFRydXN0IFNlcnZpY2VzIExMQzEU\n" \
@@ -164,8 +162,24 @@ const char * root_ca = \
 "0E6yove+7u7Y/9waLd64NnHi/Hm3lCXRSHNboTXns5lndcEZOitHTtNCjv0xyBZm\n" \
 "2tIMPNuzjsmhDYAPexZ3FL//2wmUspO8IFgV6dtxQ/PeEMMA3KgqlbbC1j+Qa3bb\n" \
 "bP6MvPJwNQzcmRk13NfIRmPVNnGuV/u3gm3c\n" \
-"-----END CERTIFICATE-----\n"; 
+"-----END CERTIFICATE-----\n"; */
 
+// Philips HUE Root_ca
+const char * root_ca = \
+"-----BEGIN CERTIFICATE-----\n" \
+"MIICOTCCAd+gAwIBAgIHF4j//m8+sDAKBggqhkjOPQQDAjA+MQswCQYDVQQGEwJO\n" \
+"TDEUMBIGA1UECgwLUGhpbGlwcyBIdWUxGTAXBgNVBAMMEDAwMTc4OGZmZmU2ZjNl\n" \
+"YjAwIhgPMjAxNzAxMDEwMDAwMDBaGA8yMDM4MDEwMTAwMDAwMFowPjELMAkGA1UE\n" \
+"BhMCTkwxFDASBgNVBAoMC1BoaWxpcHMgSHVlMRkwFwYDVQQDDBAwMDE3ODhmZmZl\n" \
+"NmYzZWIwMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQkN8PN9NrJIS7ReGkzxL\n" \
+"RmbQdwL0Wi8gPWCqcALrJ7rccvKDV3GKLIS/snotbX+zUc/Aj+iE6iVPoal2bxFa\n" \
+"JKOBwzCBwDAMBgNVHRMBAf8EAjAAMB0GA1UdDgQWBBTAFfbXZ66ecVwGxdDbnUDX\n" \
+"ypvwKDBsBgNVHSMEZTBjgBTAFfbXZ66ecVwGxdDbnUDXypvwKKFCpEAwPjELMAkG\n" \
+"A1UEBhMCTkwxFDASBgNVBAoMC1BoaWxpcHMgSHVlMRkwFwYDVQQDDBAwMDE3ODhm\n" \
+"ZmZlNmYzZWIwggcXiP/+bz6wMA4GA1UdDwEB/wQEAwIFoDATBgNVHSUEDDAKBggr\n" \
+"BgEFBQcDATAKBggqhkjOPQQDAgNIADBFAiEA1vxgWLiN1SFk3UPDgSBVrITqnkDp\n" \
+"tJb1vDSB6IXTkY8CICyGg3H5H3D+Fq3I5Bt0/LGsx8IRNUpiSF4f0u9PmYkM\n" \
+"-----END CERTIFICATE-----";
 
 
 

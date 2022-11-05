@@ -43,26 +43,23 @@ TM1637Display display2(CLK_PIN, DIO_PIN);
 WiFiManager wm;
 
 char * totalApiKeyPath;
-char * apiKeyInput; // -> apiKey
-char * bridgeInput; // -> bridgeIp
-char * groupInput;  // -> Group to control
-String groupID; 
-unsigned long lastTime = 0;
+char * apiKey;
+char * bridgeIP;
+char * controlledGroupName;  // -> Group to control
 volatile int switchlightonce = 0;
 const char* ntp_server = "de.pool.ntp.org";
 int errorState = 0;
 
 #define TIMEZONE "CET-1CEST,M3.5.0/02,M10.5.0/03"
 
-struct tm tdata;
+struct tm currentTimeData;
 struct tm wakeData;
 volatile int rotaryState = 0;
-volatile int lastDebounceTime = 0;
-volatile int lastDebounceTimeDown = 0;
-volatile int lastDebounceTimeUp = 0;
+volatile int lastButtonDebounceTime = 0;
+volatile int lastButtonDebounceTimeDown = 0;
+volatile int lastButtonDebounceTimeUp = 0;
 
-void IRAM_ATTR PinA();
-void IRAM_ATTR PinB();
+void IRAM_ATTR rotaryEncoderTurnISR();
 void IRAM_ATTR rotaryButtonISR();
 void IRAM_ATTR alarmButtonUp();
 void IRAM_ATTR alarmButtonDown();
@@ -70,22 +67,21 @@ void IRAM_ATTR alarmButtonDown();
 void saveConfigCallback();
 void saveParamsCallback();
 
-volatile int aFlag;
-volatile int bFlag;
-volatile int hours = 0;
-volatile int modifyAlarm = 0;
-volatile int deleteSchedule = 0;
-volatile int firstAlarmTime;
-volatile int secondAlarmTime;
+volatile int configuringHours = 0;
+volatile int modifyAlarm = 0; // 0 = no, 1 = currently modifying, 2 = should be changed by Request
+volatile int deleteScheduleNextLoop = 0;
+volatile int downAlarmButtonTimeStamp;
+volatile int upAlarmButtonTimeStamp;
 bool shouldSaveConfig = false;
-bool bridgeConnected = false;
+bool validBridgeIP = false;
 bool apiKeyValid = false;
 
-const char * config_str = "<p> Overwrite API-Key and Bridge-IP Config? </p>" \
+// Not needed, API-Key and Bridge IP are automatically put in for the latest values, just dont change them
+/* const char * config_str = "<p> Overwrite API-Key and Bridge-IP Config? </p>" \
                           "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice1' name='config_selection' value='STD' checked='checked' > <label for='choice1'> Standard </label><br>" \
                           "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice2' name='config_selection' value='ALT1'> <label for='choice2'> Alternative 1 </label><br>" \
                           "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice3' name='config_selection' value='ALT2'> <label for='choice3'> Alternative 2 </label><br>" \
-                          "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice4' name='config_selection' value='ALT3'> <label for='choice4'> Alternative 3 </label><br>";
+                          "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice4' name='config_selection' value='ALT3'> <label for='choice4'> Alternative 3 </label><br>"; */
 
 void setup(void){
   /*
@@ -94,9 +90,9 @@ void setup(void){
   //bool forceConfig = false;
   
   totalApiKeyPath = (char *) malloc(sizeof(char)*100);
-  apiKeyInput = (char *) malloc(sizeof(char)*40);
-  bridgeInput = (char *) malloc(sizeof(char)*40);
-  groupInput  = (char *) malloc(sizeof(char)*40);
+  apiKey = (char *) malloc(sizeof(char)*40);
+  bridgeIP = (char *) malloc(sizeof(char)*40);
+  controlledGroupName  = (char *) malloc(sizeof(char)*40);
   
   Serial.begin(115200);
   
@@ -107,17 +103,16 @@ void setup(void){
   SPI.begin();
   
   InitializeFileSystem();
-  bool spiffsSetup = loadConfigFile();
+  bool spiffsSetup = loadConfigFile(); // Was wenn nicht möglich, weil Datei noch nicht existiert?
   
   pinMode(WIFI_RESET_PIN, INPUT);
 
   // check for forced reset (reset pin)
-  checkForReset();
+  checkForForcedReset();
   
-  // Check for valid Bridge Connection and API Keys.
+  checkConnectionAndApiKey();
   
-  checkConnection();
-  if((!bridgeConnected) | (!apiKeyValid)){
+  if((!validBridgeIP) | (!apiKeyValid)){
     troubleshootConnection();
   }
   
@@ -137,7 +132,7 @@ void setup(void){
   delay(1000);
   
   // Inputs
-  registerInputs();
+  registerInputPeripherals();
   
 }
 
@@ -146,22 +141,25 @@ void loop() {
   
   delay(1000);
   if(!errorState){
-    if(!getLocalTime(&tdata)){
+    if(!getLocalTime(&currentTimeData)){
       Serial.println("Fehler beim Ermitteln der Zeit!");
       delay(1000);
     } else {
       if(!modifyAlarm){
-        display2.showNumberDecEx((tdata.tm_hour)*100 + tdata.tm_min, 0b01000000, true);
+        display2.showNumberDecEx((currentTimeData.tm_hour)*100 + currentTimeData.tm_min, 0b01000000, true);
       }
     }
     
-    if(deleteSchedule){
+    if(deleteScheduleNextLoop){
       deleteRequest("testSchedule1");
-      deleteSchedule = 0;
+      deleteScheduleNextLoop = 0;
     }
+
     
-    if(modifyAlarm){
-      updateAlarm();
+    if(modifyAlarm == 1){
+      updateAlarmDisplay();
+    } else if(modifyAlarm == 2){
+      updateRemoteAlarm();
     }
     
     delay(1000);
@@ -170,8 +168,6 @@ void loop() {
       if(!switchLights())
         switchlightonce = 0;
     }
-    
-    lastTime = millis();
   }else{
     display2.showNumberHexEx(errorState, 0, false, 4, 0);
   }
@@ -207,9 +203,10 @@ void saveConfigFile(){
   int testNumber = 1234;
   jsonDoc["testString"] = testString;
   jsonDoc["testNumber"] = testNumber;
-  jsonDoc["apiKeyInput"] = apiKeyInput;
-  jsonDoc["bridgeInput"] = bridgeInput;
-  jsonDoc["groupInput"]  = groupInput;
+  jsonDoc["apiKey"] = apiKey;
+  jsonDoc["bridgeIP"] = bridgeIP;
+  jsonDoc["controlledGroupName"]  = controlledGroupName;
+  jsonDoc["alarmTime"]   = rotaryState;
   File configFile = SPIFFS.open(JSON_CONFIG_FILE, "w");
   if(!configFile){
     Serial.println("Error opening JSON Config file");
@@ -289,10 +286,12 @@ bool loadConfigFile()
           Serial.println("Parsing JSON");
 
           // Load Input Values          
-          strcpy(apiKeyInput, json["apiKeyInput"]);
-          strcpy(groupInput, json["groupInput"]);
-          strcpy(bridgeInput, json["bridgeInput"]);
-
+          strcpy(apiKey, json["apiKey"]);
+          strcpy(controlledGroupName, json["controlledGroupName"]);
+          strcpy(bridgeIP, json["bridgeIP"]);
+          if(json.hasOwnProperty("alarmTime")){
+            rotaryState = json["alarmTime"];
+          }
           // construct Api path
           generateTotalApiKeyPath();
           return true;
@@ -305,9 +304,9 @@ bool loadConfigFile()
         configFile.close();
       }
     } else {
-      strcpy(apiKeyInput, "apiKey");
-      strcpy(groupInput, "groupInput");
-      strcpy(bridgeInput, "bridgeIP");
+      strcpy(apiKey, "apiKey");
+      strcpy(controlledGroupName, "controlledGroupName");
+      strcpy(bridgeIP, "bridgeIP");
     }
   }
   else
@@ -366,41 +365,41 @@ int calcOffset(int input){
 // weil alle Methoden, die im Interrupt ausgeführt werden das IRAM_ATTR Attribut benötigen.
 void IRAM_ATTR buttonISR(){
   int timeStamp = millis();
-  if(timeStamp > lastDebounceTime + 500){
+  if(timeStamp > lastButtonDebounceTime + 500){
     if(modifyAlarm){
       modifyAlarm = 0;
     } else {
       switchlightonce = 1;
       Serial.println("ButtonTestISR");
     }
-    lastDebounceTime = millis();
+    lastButtonDebounceTime = millis();
   }
 }
 
 void IRAM_ATTR rotaryButtonISR(){
   int timeStamp = millis();
-  if(timeStamp > lastDebounceTime + 500){
-    if(hours == 1){
-      hours = 0;
+  if(timeStamp > lastButtonDebounceTime + 500){
+    if(configuringHours == 1){
+      configuringHours = 0;
     } else {
-      hours = 1;
+      configuringHours = 1;
     }
-    lastDebounceTime = millis();
-  }
-}
-
-void IRAM_ATTR alarmButtonUp(){
-  int timeStamp = millis();
-  if(timeStamp > lastDebounceTimeUp + 500){
-    lastDebounceTimeUp = millis();
-    firstAlarmTime = millis();
-    attachInterrupt(digitalPinToInterrupt(ALARM_SWITCH_BUTTON), alarmButtonDown, FALLING);
+    lastButtonDebounceTime = millis();
   }
 }
 
 void IRAM_ATTR alarmButtonDown(){
-  secondAlarmTime = millis();
-  if(secondAlarmTime > lastDebounceTimeDown + 500){
+  int timeStamp = millis();
+  if(timeStamp > lastButtonDebounceTimeUp + 500){
+    lastButtonDebounceTimeUp = millis();
+    downAlarmButtonTimeStamp = millis();
+    attachInterrupt(digitalPinToInterrupt(ALARM_SWITCH_BUTTON), alarmButtonUp, FALLING);
+  }
+}
+
+void IRAM_ATTR alarmButtonUp(){
+  upAlarmButtonTimeStamp = millis();
+  if(upAlarmButtonTimeStamp > lastButtonDebounceTimeDown + 500){
     Serial.println("AlarmButton");
     switch(modifyAlarm){
       case 0: modifyAlarm = 1; break;
@@ -408,24 +407,24 @@ void IRAM_ATTR alarmButtonDown(){
       case 2: modifyAlarm = 2; break;
       default: break;
     }
-    if((secondAlarmTime - firstAlarmTime) >= 3000){ //Long Press
+    if((upAlarmButtonTimeStamp - downAlarmButtonTimeStamp) >= 3000){ //Long Press
       //Delete Request!
-      deleteSchedule = 1;
+      deleteScheduleNextLoop = 1;
       modifyAlarm = 0;
     }
-    attachInterrupt(digitalPinToInterrupt(ALARM_SWITCH_BUTTON), alarmButtonUp, RISING);
-    lastDebounceTimeDown = millis();
+    attachInterrupt(digitalPinToInterrupt(ALARM_SWITCH_BUTTON), alarmButtonDown, RISING);
+    lastButtonDebounceTimeDown = millis();
     
   }
 }
 
 void IRAM_ATTR buttonTest(){
   int timeStamp = millis();
-  if(timeStamp > lastDebounceTime + 500){
+  if(timeStamp > lastButtonDebounceTime + 500){
     Serial.println("ButtonTest!");
     Serial.println(timeStamp);
     switchlightonce = 1;
-    lastDebounceTime = millis();
+    lastButtonDebounceTime = millis();
   }
 }
 
@@ -441,23 +440,23 @@ void c_remove_squarebrackets(char * input, char * output){
 
 void generateTotalApiKeyPath(){
   strcpy(totalApiKeyPath, "http://");
-  strcat(totalApiKeyPath, bridgeInput);
+  strcat(totalApiKeyPath, bridgeIP);
   strcat(totalApiKeyPath, "/api/");
-  strcat(totalApiKeyPath, apiKeyInput);
+  strcat(totalApiKeyPath, apiKey);
   strcat(totalApiKeyPath, "/");
   Serial.print("generated API Key Path: ");
   Serial.println(totalApiKeyPath);
 }
 
-void checkForReset(){
+void checkForForcedReset(){
   int resetpinval = digitalRead(WIFI_RESET_PIN);
   if(resetpinval){
-    WiFiManagerParameter philipsAPIKey("HueAPIKey", "API-Key", apiKeyInput, 40);
-    WiFiManagerParameter hueBridgeIP("BridgeIP", "Bridge-IP", bridgeInput, 40);
-    WiFiManagerParameter groupName("GroupName", "Group Name", groupInput, 40);
+    WiFiManagerParameter philipsAPIKey("HueAPIKey", "API-Key", apiKey, 40);
+    WiFiManagerParameter hueBridgeIP("BridgeIP", "Bridge-IP", bridgeIP, 40);
+    WiFiManagerParameter groupName("GroupName", "Group Name", controlledGroupName, 40);
     Serial.println("add config field");
     WiFiManagerParameter customText("<p>Only change Bridge IP/HueAPIKey, if autodetection/setup fails multiple times (E2/E3 code).</p>");
-    WiFiManagerParameter config_field(config_str);
+    //WiFiManagerParameter config_field(config_str);
     Serial.println("Starte Accesspoint!");
 
     wm.addParameter(&customText);
@@ -469,23 +468,15 @@ void checkForReset(){
     wm.startConfigPortal("OnDemandAP");
     JSONVar testVar;
     
-//    testVar["apiKeyInput"] = philipsAPIKey.getValue(); // Bei Steuerung über WiFiManager
-//    testVar["bridgeInput"] = hueBridgeIP.getValue();
-////    testVar["groupInput"]  = groupName.getValue();
-
+    strcpy(apiKey, philipsAPIKey.getValue());
+    strcpy(bridgeIP, hueBridgeIP.getValue());
+    strcpy(controlledGroupName, groupName.getValue());
     
-    //Optional machen!
-    
-    strcpy(apiKeyInput, philipsAPIKey.getValue());
-    strcpy(bridgeInput, hueBridgeIP.getValue());
-    strcpy(groupInput, groupName.getValue());
-    
-    testVar["apiKeyInput"] = apiKeyInput; // Erstmal nicht über WiFiManager steuern.
-    testVar["bridgeInput"] = bridgeInput;
-    testVar["groupInput"] = groupInput;
+    testVar["apiKey"] = apiKey; 
+    testVar["bridgeIP"] = bridgeIP;
+    testVar["controlledGroupName"] = controlledGroupName;
   
     jsonVarToSPIFFS(testVar, JSON_CONFIG_FILE);
-
 
     generateTotalApiKeyPath();
     
@@ -512,24 +503,24 @@ void checkForReset(){
 }
 
 void troubleshootConnection() {
-  if(!bridgeConnected){
+  if(!validBridgeIP){
       Serial.println("Bridge not connected, try new connection");
-      connectToBridge(); // Connect to Bridge (-> update IP adress, if changed)
+      getIpViaMDNS(); // Connect to Bridge (-> update IP adress, if changed)
 
       // again check the connection, IP/hostname should now be correct, check for API Key
-      checkConnection();
-      if(!bridgeConnected){
+      checkConnectionAndApiKey();
+      if(!validBridgeIP){
         Serial.println("Bridge still not connected! There might be an error in your configuration.");
         display2.showNumberHexEx(err_bridgeIP, 0, false, 4, 0);
         errorState = err_bridgeIP;
       } else {
         if(!apiKeyValid){
           Serial.println("API-Key invalid, check again");
-          checkConnection();
+          checkConnectionAndApiKey();
           
           if(!apiKeyValid){
             Serial.println("API-Key still invalid, will try to get new on");
-            configureAPIKey(10);  
+            getAndSaveNewAPIKey(10);  
           }
           if(!apiKeyValid){
             Serial.println("API-Key still invalid, personal inspection needed");
@@ -545,13 +536,13 @@ void troubleshootConnection() {
     if(!apiKeyValid){
       // get new API Key -> indicate via some light? 
       Serial.println("API-Key invalid, check again");
-      checkConnection();
+      checkConnectionAndApiKey();
       if(!apiKeyValid){
         display2.showNumberHexEx(err_apiKey, 0, false, 4, 0);
         Serial.println("API-Key still invalid, will try to get new on");
-        configureAPIKey(10);
+        getAndSaveNewAPIKey(10);
       }
-      checkConnection();
+      checkConnectionAndApiKey();
       if(!apiKeyValid){
         Serial.println("API-Key still invalid, personal inspection needed");
         display2.showNumberHexEx(err_apiKey, 0, false, 4, 0);
@@ -570,32 +561,27 @@ void configureTime(){
   // vor Trennung des WLANs einmal getLocalTime()
   // aufrufen; sonst wird die Zeit nicht übernommen
   Serial.println("Get Time");
-  getLocalTime(&tdata);
+  getLocalTime(&currentTimeData);
   getLocalTime(&wakeData);
   setenv("TZ", TIMEZONE, 1);  // Zeitzone einstellen
 }
 
-void registerInputs(){
+void registerInputPeripherals(){
   Serial.println("Register Buttons");
   registerButton(BUTTON_PIN, FALLING, buttonISR, INPUT);
   Serial.println("Registered Button_Pin");
   registerButton(ROTARY_BUTTON,FALLING, rotaryButtonISR, INPUT_PULLUP);
   Serial.println("Registered Rotary BUtton");
-  registerButton(ALARM_SWITCH_BUTTON, RISING, alarmButtonUp, INPUT);
+  registerButton(ALARM_SWITCH_BUTTON, RISING, alarmButtonDown, INPUT);
   Serial.println("Registered Alarm Button");
-  initRotaryEncoder(ENC_B, ENC_A, PinA, PinB, CHANGE, CHANGE);
+  initRotaryEncoder(ENC_B, ENC_A, rotaryEncoderTurnISR, CHANGE);
   Serial.println("Registered Encoders");
   registerButton(BUTTON_TEST, FALLING, buttonTest, INPUT);
   Serial.println("Registered TestButton");
   Serial.println("Register Buttons done");
 }
 
-const char * testSSID = "esp-wifi-ssid";
-const char * testPassword = "12345678";
-
-
-
-void updateAlarm(){
+void updateAlarmDisplay(){
   display2.setBrightness(3);
   display2.showNumberDecEx(rotaryState, 0b01000000, true);
   
@@ -603,29 +589,30 @@ void updateAlarm(){
   
   delay(800);
   display2.setBrightness(1);
-  if(modifyAlarm == 2){
-    //Update Alarm
-    char * timeString = (char *) malloc(sizeof(char)*21);
-    getLocalTime(&wakeData);
-    if( (rotaryState/100 < 24) & (rotaryState/100 >= 0) & (rotaryState%100 < 60) & (rotaryState%100 >= 0)){
-      wakeData.tm_hour = rotaryState/100;
-      wakeData.tm_min = rotaryState%100;
-      time_t wakeTime = mktime(&wakeData);
-      time_t currTime = mktime(&tdata);
-      if(difftime(wakeTime, currTime) < 0){
-       wakeData.tm_mday += 1;
-      }
-      snprintf(timeString, 21, "%d-%02d-%02dT%02d:%02d:00", wakeData.tm_year+1900,wakeData.tm_mon+1, wakeData.tm_mday, rotaryState/100, rotaryState%100);
-      updateLightSchedule("testSchedule1", true, timeString, groupInput);
-      modifyAlarm = 0;
-    } else {
-      Serial.println("Invalid Rotary State!");
-      modifyAlarm = 1;
+  display2.showNumberDecEx(rotaryState, 0b01000000, true);
+}
+
+void updateRemoteAlarm(){
+  //Update Alarm
+  char * timeString = (char *) malloc(sizeof(char)*21);
+  getLocalTime(&wakeData);
+  if( (rotaryState/100 < 24) & (rotaryState/100 >= 0) & (rotaryState%100 < 60) & (rotaryState%100 >= 0)){
+    wakeData.tm_hour = rotaryState/100;
+    wakeData.tm_min = rotaryState%100;
+    time_t wakeTime = mktime(&wakeData);
+    time_t currTime = mktime(&currentTimeData);
+    if(difftime(wakeTime, currTime) < 0){
+     wakeData.tm_mday += 1;
     }
-    Serial.println(timeString);
-  }else {
-    display2.showNumberDecEx(rotaryState, 0b01000000, true);
+    snprintf(timeString, 21, "%d-%02d-%02dT%02d:%02d:00", wakeData.tm_year+1900,wakeData.tm_mon+1, wakeData.tm_mday, rotaryState/100, rotaryState%100);
+    updateLightSchedule("testSchedule1", true, timeString, controlledGroupName);
+    saveConfigFile();
+    modifyAlarm = 0;
+  } else {
+    Serial.println("Invalid Rotary State!");
+    modifyAlarm = 1;
   }
+  Serial.println(timeString);
 }
 
 int mod(int a, int b)
@@ -638,7 +625,7 @@ int mod(int a, int b)
    return ret;
 }
 
-void IRAM_ATTR PinA()
+void IRAM_ATTR rotaryEncoderTurnISR()
 {
   
   static uint8_t old_AB = 3;  // Lookup table index
@@ -654,7 +641,7 @@ void IRAM_ATTR PinA()
 
   // Update counter if encoder has rotated a full indent, that is at least 4 steps
   if( encval > 3 ) {        // Four steps forward
-    if(hours){
+    if(configuringHours){
       rotaryState = rotaryState + 100;
     } else {
       rotaryState++;              // Increase counter
@@ -663,7 +650,7 @@ void IRAM_ATTR PinA()
     encval = 0;
   }
   else if( encval < -3 ) {  // Four steps backwards
-   if(hours){
+   if(configuringHours){
      rotaryState = rotaryState - 100; 
    }else{
      rotaryState--;
@@ -673,24 +660,15 @@ void IRAM_ATTR PinA()
   }
 }
 
-void IRAM_ATTR PinB()
-{
-   if(aFlag){
-    //rotaryState -= 1;
-    aFlag = 0;
-   }else{
-    bFlag = 1;
-   }
-}
 
 /*
  *  initialize rotary encoder for alarm settings
  */
-void initRotaryEncoder(int pinA, int pinB, void (*targetFunctionA)(void), void (*targetFunctionB)(void), int eventA, int eventB){
+void initRotaryEncoder(int pinA, int pinB, void (*targetFunctionA)(void), int event){
   pinMode(pinA, INPUT);
   pinMode(pinB, INPUT);
-  attachInterrupt(digitalPinToInterrupt(pinA), targetFunctionA, eventA);
-  attachInterrupt(digitalPinToInterrupt(pinB), targetFunctionA, eventB);
+  attachInterrupt(digitalPinToInterrupt(pinA), targetFunctionA, event);
+  attachInterrupt(digitalPinToInterrupt(pinB), targetFunctionA, event);
 }
 
 /*
@@ -698,24 +676,24 @@ void initRotaryEncoder(int pinA, int pinB, void (*targetFunctionA)(void), void (
  * timeout: how often shall getting a new Key be tried
  * will try to get a key all 15 seconds, as long as timeout isnt reached
  */
-void configureAPIKey(int timeout){
+void getAndSaveNewAPIKey(int timeout){
   bool configured = false;
   for(int i = 0; i < timeout; i++){
     JSONVar inVar;
     
     char * t_path = (char *) malloc(sizeof(char)*50);
     strcpy(t_path, "http://");
-    strcat(t_path, bridgeInput);
+    strcat(t_path, bridgeIP);
     strcat(t_path, "/api/");
     char * apiRequest = "{\"devicetype\":\"clockApp\"}";
-    inVar = postRequest(t_path, apiRequest);
+    postRequest(t_path, apiRequest, inVar);
     if(inVar.hasOwnProperty("error")){
       Serial.println(JSON.stringify(inVar));
       Serial.println("Might try again in a few seconds (15), please press link button, if error tells so");
       delay(15000);
     } else {
       if(inVar.hasOwnProperty("success")){
-        strcpy(apiKeyInput, inVar["success"]["username"]);
+        strcpy(apiKey, inVar["success"]["username"]);
         Serial.print("New API Key generated: ");
         Serial.println(inVar["success"]["username"]);
         configured = true;
@@ -736,7 +714,7 @@ void configureAPIKey(int timeout){
  * Connects to HUE Bridge via mDNS in local network
  * API Key an anderer Stelle erneuern.
  */
-void connectToBridge(){
+void getIpViaMDNS(){
   if(WiFi.status() == WL_CONNECTED){
     JSONVar inVar; //= (JSONVar *) malloc(sizeof(JSONVar));
     if(!MDNS.begin("ESP32_Browser")){
@@ -756,14 +734,14 @@ void connectToBridge(){
         Serial.print(" (");
         Serial.print(MDNS.IP(i));
         //Set BridgeIp!
-        strcpy(bridgeInput, MDNS.IP(i).toString().c_str());
+        strcpy(bridgeIP, MDNS.IP(i).toString().c_str());
         
         Serial.print(":");
         Serial.print(MDNS.port(i));
         Serial.println(")");
         Serial.print("New bridge IP String: ");
-        Serial.println(bridgeInput);
-        bridgeConnected = true;
+        Serial.println(bridgeIP);
+        validBridgeIP = true;
       }
     }
   }
@@ -772,7 +750,7 @@ void connectToBridge(){
 /*
  * Checks Bridge connection and Api-Key
  */
-void checkConnection(){
+void checkConnectionAndApiKey(){
   HTTPClient http;
   
   char * testPath = (char *) malloc(sizeof(char)*500);
@@ -808,12 +786,12 @@ void checkConnection(){
         Serial.println("Json doesnt have property Error");
         Serial.println("Successfully checked connection");
         //Serial.println(result["error"]["description"]);
-        bridgeConnected = true;
+        validBridgeIP = true;
         apiKeyValid = true;
       }
     } else {
       Serial.println("HTTP-Call failed. Hostname might be incorrect.");
-      bridgeConnected = false;
+      validBridgeIP = false;
     }
   }else{ // is never reached....
     Serial.println("IP/Hostname are not reachable");
@@ -833,13 +811,13 @@ int switchLights(){
     /*
      * Create Post Request Body
      */
-    if(getGroupStatus(groupInput)){
+    if(getGroupStatus(controlledGroupName)){
       httpRequestData = "{ \"on\": false}";
     } else {
       httpRequestData = "{ \"on\": true}";
     }
     
-    int id = getGroupID(groupInput);
+    int id = getGroupID(controlledGroupName);
     
     String serverPath = String(totalApiKeyPath) +"groups/" + String(id) + "/action";
     
@@ -898,18 +876,16 @@ int getGroupStatus(char * groupName){
   getRequest(strcat(name, sID), jsonRes);
   
   Serial.print("Group Status: ");
-  Serial.println((jsonRes)["action"]["on"]);
-  Serial.println(((jsonRes).stringify((jsonRes)["action"]["on"])).c_str());
+  Serial.println(jsonRes["action"]["on"]);
+  Serial.println(JSON.stringify(jsonRes["action"]["on"]).c_str());
 
   /*
    * Convert Result to 0/1
    */
-  if(!strcmp(((jsonRes).stringify((jsonRes)["action"]["on"])).c_str(), String("true").c_str())){
+  if(!strcmp(JSON.stringify(jsonRes["action"]["on"]).c_str(), String("true").c_str())){
     Serial.println("Returning from getGroupStatus true");
-    //free(jsonRes);
     return 1;
   } else {
-    //free(jsonRes);
     Serial.println("Returning from getGroupStatus false");
     return 0;
   }
@@ -945,7 +921,7 @@ int getRequest(const char * path, JSONVar& inVar, bool https){
   return 0;
 }
 
-JSONVar postRequest(char * path, char * body){
+int postRequest(char * path, char * body, JSONVar& jsonVar){
   HTTPClient http;
   http.begin(path);
   http.POST(body);
@@ -957,27 +933,29 @@ JSONVar postRequest(char * path, char * body){
   c_remove_squarebrackets(result, cleanedResult);
   Serial.println(cleanedResult);
   
-  JSONVar myObject = JSON.parse(cleanedResult);
+  jsonVar = JSON.parse(cleanedResult);
   http.end();
-  if(JSON.typeof(myObject) == "undefined") {
+  if(JSON.typeof(jsonVar) == "undefined") {
     Serial.println("Post Parsing input failed!");
-    return null;
+    return 1;
   }
-  return myObject;
+  free(cleanedResult);
+  free(result);
+  return 0;
 }
 
-int putRequest(char * path, char * body, JSONVar * jsonVar){
+int putRequest(char * path, char * body, JSONVar& jsonVar){
   HTTPClient http;
   http.begin(path);
   http.PUT(body);
   Serial.println(body);
   String payload = http.getString();
   Serial.println(payload);
-  *jsonVar = JSON.parse(payload);
+  jsonVar = JSON.parse(payload);
 
-  if(JSON.typeof(*jsonVar) == "undefined") {
+  if(JSON.typeof(jsonVar) == "undefined") {
     Serial.println("Put Request Parsing input failed!");
-    return 1;
+    return 1; // Try again?
   }
   http.end();
   return 0;
@@ -989,6 +967,7 @@ int putRequest(char * path, char * body, JSONVar * jsonVar){
  * event: RISING, FALLING, HIGH, LOW, CHANGE
  * targetFunction: ISR function which should be executed.
  * targetFunction must have the signature: void IRAM_ATTR functionname(){...}
+ * modus = INPUT,....
  */
 int registerButton(uint8_t pin, int event, void (*targetFunction)(void), int modus){
   //Serial.println("Register Button");
@@ -1002,44 +981,49 @@ int registerButton(uint8_t pin, int event, void (*targetFunction)(void), int mod
 void updateLightSchedule(char * scheduleName, bool state, char * timeIn, char * groupName){
   Serial.println("update get schedule ID for");
   Serial.println(scheduleName);
-  int id = getScheduleID(scheduleName);
+  int schedID = getScheduleID(scheduleName);
   Serial.println("Got schedule ID");
   char * path = (char *) malloc(sizeof(char) * 100);
-  strcpy(path, totalApiKeyPath); //apiKeyPath
+  strcpy(path, totalApiKeyPath); 
   strcat(path, "schedules/");
-  JSONVar * resJson = (JSONVar *) malloc(sizeof(JSONVar));
+  JSONVar resJson;
   char * cState = (char *) malloc(sizeof(char)*6);
   if(state){
     strcpy(cState, "true");
   } else {
     strcpy(cState, "false");
   }
-  if(id){
-    int gId = getGroupID(groupName);
+
+  if(schedID){
+    int groupId = getGroupID(groupName);
     Serial.println("Update Schedule");
     // Update Schedule  
     char * message = (char *) malloc(sizeof(char) * 200);
-    snprintf(message, sizeof(char)*200, "{\"localtime\": \"%s\", \"command\": { \"address\": \"/api/%s/groups/%d/action\", \"body\": { \"on\": %s, \"bri\": 254}, \"method\": \"PUT\"}}", timeIn, apiKeyInput, gId, cState);
-    strcat(path, String(id).c_str());
+    snprintf(message, sizeof(char)*200, "{\"localtime\": \"%s\", \"command\": { \"address\": \"/api/%s/groups/%d/action\", \"body\": { \"on\": %s, \"bri\": 254}, \"method\": \"PUT\"}}", timeIn, apiKey, groupId, cState);
+    strcat(path, String(schedID).c_str());
     Serial.println(message);
-    putRequest(path, message, resJson);
+    while(putRequest(path, message, resJson)){ // -> Try again if failed
+      delay(1000);
+    }
     Serial.println("Updated Schedule");
     free(message);
   }else{
     // Create Schedule
     Serial.println("Create Schedule");
     char * message = (char *) malloc(sizeof(char) * 300);
-    int id = getGroupID(groupName);
+    int groupID = getGroupID(groupName);
     Serial.println("Got Group ID");
     
-    if(id){
-      snprintf(message, sizeof(char)*299, "{\"name\": \"%s\", \"description\": \"My wake up alarm\", \"command\": { \"address\": \"/api/%s/groups/%d/action\", \"method\": \"PUT\", \"body\": { \"on\": %s, \"bri\": 254 } }, \"localtime\": \"%s\"}", scheduleName, apiKeyInput, id, cState, timeIn);
+    if(groupID){
+      snprintf(message, sizeof(char)*299, "{\"name\": \"%s\", \"description\": \"My wake up alarm\", \"command\": { \"address\": \"/api/%s/groups/%d/action\", \"method\": \"PUT\", \"body\": { \"on\": %s, \"bri\": 254 } }, \"localtime\": \"%s\"}", scheduleName, apiKey, groupID, cState, timeIn);
       Serial.println("Try postRequest");
       Serial.print("Request: ");
       Serial.println(message);
       Serial.print("Path: ");
       Serial.println(path);
-      postRequest(path, message);
+      while(postRequest(path, message, resJson)){
+        delay(1000);
+      }
     }else{
       Serial.println("Error, group not found");
     }
@@ -1141,8 +1125,8 @@ int getGroupID(char * groupName){
     Serial.print("Korrekte ID ist: ");
     Serial.println(index, DEC);
     
-    groupID = String(index);
   }
+  free(groupPath);
   return index;
 }
 
@@ -1161,5 +1145,6 @@ void deleteRequest(char * scheduleName){
     Serial.print("Delete result: ");
     Serial.println(http.getString());
     http.end();
+    free(deletePath);
   }
 }
