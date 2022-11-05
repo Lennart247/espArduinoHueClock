@@ -38,7 +38,7 @@
 
 #define JSON_CONFIG_FILE "/test_config.json"
 
-TM1637Display display2(CLK_PIN, DIO_PIN);
+TM1637Display display(CLK_PIN, DIO_PIN);
 
 WiFiManager wm;
 
@@ -76,18 +76,11 @@ bool shouldSaveConfig = false;
 bool validBridgeIP = false;
 bool apiKeyValid = false;
 
-// Not needed, API-Key and Bridge IP are automatically put in for the latest values, just dont change them
-/* const char * config_str = "<p> Overwrite API-Key and Bridge-IP Config? </p>" \
-                          "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice1' name='config_selection' value='STD' checked='checked' > <label for='choice1'> Standard </label><br>" \
-                          "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice2' name='config_selection' value='ALT1'> <label for='choice2'> Alternative 1 </label><br>" \
-                          "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice3' name='config_selection' value='ALT2'> <label for='choice3'> Alternative 2 </label><br>" \
-                          "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice4' name='config_selection' value='ALT3'> <label for='choice4'> Alternative 3 </label><br>"; */
 
 void setup(void){
   /*
    * Größtenteils SPI/WiFi Init  
    */
-  //bool forceConfig = false;
   
   totalApiKeyPath = (char *) malloc(sizeof(char)*100);
   apiKey = (char *) malloc(sizeof(char)*40);
@@ -103,11 +96,10 @@ void setup(void){
   SPI.begin();
   
   InitializeFileSystem();
-  bool spiffsSetup = loadConfigFile(); // Was wenn nicht möglich, weil Datei noch nicht existiert?
+  bool spiffsSetup = loadConfigFile(); // Was wenn nicht möglich, weil Datei noch nicht existiert? Passiert nicht, dann wird Datei erstellt, wenn schon existiert aber Änderungen -> SPI-Flash löschen!
   
   pinMode(WIFI_RESET_PIN, INPUT);
 
-  // check for forced reset (reset pin)
   checkForForcedReset();
   
   checkConnectionAndApiKey();
@@ -116,10 +108,6 @@ void setup(void){
     troubleshootConnection();
   }
   
-  /*
-   * Ab hier auch der Rest (die alte setupFunktion);
-   */
-  
   // Zeiteinstellung
   
   configureTime();
@@ -127,7 +115,7 @@ void setup(void){
   // Display
   
   Serial.println("Set Display");
-  display2.setBrightness(2);
+  display.setBrightness(2);
 
   delay(1000);
   
@@ -146,7 +134,7 @@ void loop() {
       delay(1000);
     } else {
       if(!modifyAlarm){
-        display2.showNumberDecEx((currentTimeData.tm_hour)*100 + currentTimeData.tm_min, 0b01000000, true);
+        display.showNumberDecEx((currentTimeData.tm_hour)*100 + currentTimeData.tm_min, 0b01000000, true);
       }
     }
     
@@ -169,7 +157,7 @@ void loop() {
         switchlightonce = 0;
     }
   }else{
-    display2.showNumberHexEx(errorState, 0, false, 4, 0);
+    display.showNumberHexEx(errorState, 0, false, 4, 0);
   }
 }
 
@@ -199,10 +187,6 @@ void saveConfigFile(){
 
   //Create a JSON document
   JSONVar jsonDoc;
-  char testString[50] = "test value";
-  int testNumber = 1234;
-  jsonDoc["testString"] = testString;
-  jsonDoc["testNumber"] = testNumber;
   jsonDoc["apiKey"] = apiKey;
   jsonDoc["bridgeIP"] = bridgeIP;
   jsonDoc["controlledGroupName"]  = controlledGroupName;
@@ -212,6 +196,7 @@ void saveConfigFile(){
     Serial.println("Error opening JSON Config file");
   }
   configFile.close();
+
   //serializeJsonPretty(jsonDoc, Serial);
   Serial.println("stringified JSON: ");
   Serial.println(JSON.stringify(jsonDoc).c_str());
@@ -220,8 +205,6 @@ void saveConfigFile(){
   } else {
     Serial.println("Successfully written to file");
   }
-
-
 }
 
 bool jsonVarToSPIFFS(JSONVar& json, char * storePath){
@@ -234,11 +217,11 @@ bool jsonVarToSPIFFS(JSONVar& json, char * storePath){
     strcpy(jsonBuffer, JSON.stringify(json).c_str());
     Serial.print("JsonBuffer: ");
     Serial.println(jsonBuffer);
-    //size_t sizePayload = sizeof(jsonBuffer);
+
     Serial.print("Size of the stringified Json: ");
     Serial.println(sizeof(jsonBuffer));
-    storage.write((uint8_t *) jsonBuffer, 200); // Vielleicht darf jsonBuffer so nicht übertragen werden?? nicht casten oder so?
-    //storage.write(json, sizePayload);
+    storage.write((uint8_t *) jsonBuffer, 200); 
+
   }
   storage.close();
   return true;
@@ -248,7 +231,7 @@ bool loadConfigFile()
 // Load existing configuration file
 {
   // Uncomment if we need to format filesystem
-  // SPIFFS.format();
+  // SPIFFS.format(); -> Should be done via Arduino IDE (Esptool)
  
   // Read configuration from FS json
   Serial.println("Mounting File System...");
@@ -274,9 +257,7 @@ bool loadConfigFile()
         Serial.println(jsonStringBuffer);
         
         JSONVar json = JSON.parse(jsonStringBuffer);
- 
-        //json
-        
+
         //DeserializationError error = deserializeJson(json, configFile);
         Serial.println(JSON.stringify(json));
         //serializeJsonPretty(json, Serial);
@@ -323,13 +304,11 @@ void saveConfigCallback()
 {
   Serial.println("Should save config");
   shouldSaveConfig = true;
-  
-  
 }
 
 void saveParamsCallback(){
   Serial.println("Get Params: ");
-  if(wm.server->hasArg("config_selection")){ // Durch abc ersetzen?
+  if(wm.server->hasArg("config_selection")){ 
     // specified in html name
     Serial.println("Server got arg selection");
     Serial.println(wm.server->arg("config_selection"));
@@ -350,17 +329,6 @@ void configModeCallback(WiFiManager *myWiFiManager)
   Serial.println(WiFi.softAPIP()); // ???
 }
  
-
-int calcOffset(int input){
-  int t_count = 3;
-  int t_input = input;
-  while(t_input > 10){
-    t_count -= 1;
-    t_input = t_input/10;
-  }
-  return t_count;
-}
-
 //Das Licht selber kann nicht direkt hier geschaltet werden,
 // weil alle Methoden, die im Interrupt ausgeführt werden das IRAM_ATTR Attribut benötigen.
 void IRAM_ATTR buttonISR(){
@@ -414,7 +382,6 @@ void IRAM_ATTR alarmButtonUp(){
     }
     attachInterrupt(digitalPinToInterrupt(ALARM_SWITCH_BUTTON), alarmButtonDown, RISING);
     lastButtonDebounceTimeDown = millis();
-    
   }
 }
 
@@ -511,7 +478,7 @@ void troubleshootConnection() {
       checkConnectionAndApiKey();
       if(!validBridgeIP){
         Serial.println("Bridge still not connected! There might be an error in your configuration.");
-        display2.showNumberHexEx(err_bridgeIP, 0, false, 4, 0);
+        display.showNumberHexEx(err_bridgeIP, 0, false, 4, 0);
         errorState = err_bridgeIP;
       } else {
         if(!apiKeyValid){
@@ -524,7 +491,7 @@ void troubleshootConnection() {
           }
           if(!apiKeyValid){
             Serial.println("API-Key still invalid, personal inspection needed");
-            display2.showNumberHexEx(err_apiKey, 0, false, 4, 0);
+            display.showNumberHexEx(err_apiKey, 0, false, 4, 0);
             errorState = err_apiKey;
           }
         }
@@ -538,14 +505,14 @@ void troubleshootConnection() {
       Serial.println("API-Key invalid, check again");
       checkConnectionAndApiKey();
       if(!apiKeyValid){
-        display2.showNumberHexEx(err_apiKey, 0, false, 4, 0);
+        display.showNumberHexEx(err_apiKey, 0, false, 4, 0);
         Serial.println("API-Key still invalid, will try to get new on");
         getAndSaveNewAPIKey(10);
       }
       checkConnectionAndApiKey();
       if(!apiKeyValid){
         Serial.println("API-Key still invalid, personal inspection needed");
-        display2.showNumberHexEx(err_apiKey, 0, false, 4, 0);
+        display.showNumberHexEx(err_apiKey, 0, false, 4, 0);
         errorState = err_apiKey;
       } else {
         generateTotalApiKeyPath();
@@ -582,14 +549,14 @@ void registerInputPeripherals(){
 }
 
 void updateAlarmDisplay(){
-  display2.setBrightness(3);
-  display2.showNumberDecEx(rotaryState, 0b01000000, true);
+  display.setBrightness(3);
+  display.showNumberDecEx(rotaryState, 0b01000000, true);
   
   Serial.println(rotaryState, DEC);
   
   delay(800);
-  display2.setBrightness(1);
-  display2.showNumberDecEx(rotaryState, 0b01000000, true);
+  display.setBrightness(1);
+  display.showNumberDecEx(rotaryState, 0b01000000, true);
 }
 
 void updateRemoteAlarm(){
@@ -679,23 +646,23 @@ void initRotaryEncoder(int pinA, int pinB, void (*targetFunctionA)(void), int ev
 void getAndSaveNewAPIKey(int timeout){
   bool configured = false;
   for(int i = 0; i < timeout; i++){
-    JSONVar inVar;
+    JSONVar receivedJSON;
     
     char * t_path = (char *) malloc(sizeof(char)*50);
     strcpy(t_path, "http://");
     strcat(t_path, bridgeIP);
     strcat(t_path, "/api/");
     char * apiRequest = "{\"devicetype\":\"clockApp\"}";
-    postRequest(t_path, apiRequest, inVar);
+    postRequest(t_path, apiRequest, receivedJSON);
     if(inVar.hasOwnProperty("error")){
-      Serial.println(JSON.stringify(inVar));
+      Serial.println(JSON.stringify(receivedJSON));
       Serial.println("Might try again in a few seconds (15), please press link button, if error tells so");
       delay(15000);
     } else {
-      if(inVar.hasOwnProperty("success")){
-        strcpy(apiKey, inVar["success"]["username"]);
+      if(receivedJSON.hasOwnProperty("success")){
+        strcpy(apiKey, receivedJSON["success"]["username"]);
         Serial.print("New API Key generated: ");
-        Serial.println(inVar["success"]["username"]);
+        Serial.println(receivedJSON["success"]["username"]);
         configured = true;
       }
     }
@@ -716,7 +683,6 @@ void getAndSaveNewAPIKey(int timeout){
  */
 void getIpViaMDNS(){
   if(WiFi.status() == WL_CONNECTED){
-    JSONVar inVar; //= (JSONVar *) malloc(sizeof(JSONVar));
     if(!MDNS.begin("ESP32_Browser")){
       Serial.println("Error setting up MDNS responder");
     }
@@ -817,12 +783,12 @@ int switchLights(){
       httpRequestData = "{ \"on\": true}";
     }
     
-    int id = getGroupID(controlledGroupName);
+    int l_groupID = getGroupID(controlledGroupName);
     
-    String serverPath = String(totalApiKeyPath) +"groups/" + String(id) + "/action";
+    String serverPath = String(totalApiKeyPath) +"groups/" + String(l_groupID) + "/action";
     
     Serial.print("ID: ");
-    Serial.println(id, DEC);
+    Serial.println(l_groupID, DEC);
     Serial.print("Pfad: ");
     Serial.println(serverPath);
     Serial.print("Wert: ");
@@ -858,13 +824,13 @@ int switchLights(){
  * For groupName
  */
 int getGroupStatus(char * groupName){
-  int id = getGroupID(groupName);
+  int l_groupId = getGroupID(groupName);
   char sID[5];
 
   /*
    * Convert groupName and PATH to one Path.
    */
-  sprintf(sID, "%d", id);
+  sprintf(sID, "%d", l_groupId);
   char * name = (char *) malloc(sizeof(char)*100);
   strcpy(name, totalApiKeyPath);
   strcat(name, "groups/");
@@ -894,7 +860,7 @@ int getGroupStatus(char * groupName){
  * path: Get Request URL
  * inVar: Pointer to JSONVar, where the result shall be stored.
  */
-int getRequest(const char * path, JSONVar& inVar, bool https){
+int getRequest(const char * path, JSONVar& receivedJSON, bool https){
   /*
    * HTTP Get Request
    */
@@ -911,8 +877,8 @@ int getRequest(const char * path, JSONVar& inVar, bool https){
   /*
    * JSON Parsing
    */
-  inVar = JSON.parse(payload);
-  if(JSON.typeof(inVar) == "undefined") {
+  receivedJSON = JSON.parse(payload);
+  if(JSON.typeof(receivedJSON) == "undefined") {
     Serial.println("Parsing input failed getRequest!");
     Serial.println(payload);
     return 1;
@@ -921,7 +887,7 @@ int getRequest(const char * path, JSONVar& inVar, bool https){
   return 0;
 }
 
-int postRequest(char * path, char * body, JSONVar& jsonVar){
+int postRequest(char * path, char * body, JSONVar& receivedJSON){
   HTTPClient http;
   http.begin(path);
   http.POST(body);
@@ -933,9 +899,9 @@ int postRequest(char * path, char * body, JSONVar& jsonVar){
   c_remove_squarebrackets(result, cleanedResult);
   Serial.println(cleanedResult);
   
-  jsonVar = JSON.parse(cleanedResult);
+  receivedJSON = JSON.parse(cleanedResult);
   http.end();
-  if(JSON.typeof(jsonVar) == "undefined") {
+  if(JSON.typeof(receivedJSON) == "undefined") {
     Serial.println("Post Parsing input failed!");
     return 1;
   }
@@ -944,16 +910,16 @@ int postRequest(char * path, char * body, JSONVar& jsonVar){
   return 0;
 }
 
-int putRequest(char * path, char * body, JSONVar& jsonVar){
+int putRequest(char * path, char * body, JSONVar& receivedJSON){
   HTTPClient http;
   http.begin(path);
   http.PUT(body);
   Serial.println(body);
   String payload = http.getString();
   Serial.println(payload);
-  jsonVar = JSON.parse(payload);
+  receivedJSON = JSON.parse(payload);
 
-  if(JSON.typeof(jsonVar) == "undefined") {
+  if(JSON.typeof(receivedJSON) == "undefined") {
     Serial.println("Put Request Parsing input failed!");
     return 1; // Try again?
   }
@@ -1049,16 +1015,14 @@ int getScheduleID(char * scheduleName){
   Serial.println(payload);
   http.end();
 
-  JSONVar myObject = JSON.parse(payload);
+  JSONVar receivedScheduleJSON = JSON.parse(payload);
   int index = 1;
   while(index < MAX_DEVICE_GROUPS){
-    //Serial.print(index);
-    //Serial.println(myObject[String(index)]);
-    //if(myObject[String(index)]){ // Geht wahrscheinlich nicht.
-    if(strcmp(JSON.stringify(myObject[String(index)]).c_str(), "null")){  
-      Serial.println(myObject[String(index)]);
-      Serial.println(myObject[String(index)]["name"]);
-      if(!strcmp(myObject[String(index)]["name"], scheduleName)){
+
+    if(strcmp(JSON.stringify(receivedScheduleJSON[String(index)]).c_str(), "null")){  
+      Serial.println(receivedScheduleJSON[String(index)]);
+      Serial.println(receivedScheduleJSON[String(index)]["name"]);
+      if(!strcmp(receivedScheduleJSON[String(index)]["name"], scheduleName)){
         Serial.print("Korrekte Schedule ID ist: ");
         Serial.println(index, DEC);
         break;
@@ -1092,23 +1056,23 @@ int getGroupID(char * groupName){
   /*
    * Convert to JSON
    */
-  JSONVar myObject = JSON.parse(payload);
-  if(JSON.typeof(myObject) == "undefined") {
+  JSONVar receivedJSON = JSON.parse(payload);
+  if(JSON.typeof(receivedJSON) == "undefined") {
     Serial.println("Parsing input failed, getGroupID!");
     return 0;
   }
   Serial.print("JSON Object = ");
-  Serial.println(myObject);
+  Serial.println(receivedJSON);
   int index = 1;
-  Serial.println(myObject.keys());
+  Serial.println(receivedJSON.keys());
   
   /*
    * Iterate over all Device groups until correct one is found
    */
   while(index < MAX_DEVICE_GROUPS){
     Serial.print(index);
-    Serial.println(myObject[String(index)]);
-    if(!strcmp(myObject[String(index)]["name"],groupName)){
+    Serial.println(receivedJSON[String(index)]);
+    if(!strcmp(receivedJSON[String(index)]["name"],groupName)){
       Serial.print("Korrekte ID ist: ");
       Serial.println(index, DEC);
       break; 
