@@ -1,36 +1,14 @@
 #ifndef espWEB
 #define espWEB
 
-/*
- * get internal ID of group
- * @param groupName name of the group (i.e. Roomname... single Lamps aren't supported)
- * @result ID of group
- */
-int getGroupID(char * groupName);
+#define CLK_PIN 26
+#define DIO_PIN 27
 
-/*
- * get status of the group
- * @param groupName name of the group (i.e. Roomname... single Lamps aren't supported)
- * @result 1 = on, 0 = off
- */
-int getGroupStatus(char * groupName);
+#include <TM1637Display.h>
+#include <WiFiManager.h>
+#include <Arduino_JSON.h>
 
-/*
- *  make a postRequest to the URL dictated by path
- *  @param path URL, mostly API Calls
- *  @param body JSON body, e.g. for configuring routines/schedules
- *  @return returns JSONVar for accessing the returned JSON
- */ 
-int postRequest(char * path, char * body, JSONVar& jsonVar);
-
-/*
- * make a getRequest
- * @param path URL
- * @param inVar inVar for storing result
- * @param https, whether call shall be executed by https, needs valid root_ca
- * 
- */
-int getRequest(const char * path, JSONVar& inVar, bool https = false);
+extern TM1637Display * display2; //(CLK_PIN, DIO_PIN);
 
 /*
  * register a button interrupt
@@ -40,39 +18,11 @@ int getRequest(const char * path, JSONVar& inVar, bool https = false);
  * @param modus ... the GPIO mode usually INPUT for a button
  */
 int registerButton(uint8_t pin, int event, void (*targetFunction)(void), int modus);
+
 /*
  * switch the configured Lightgroup
  */ 
 int switchLights();
-
-/*
- * get the schedule ID for further use (e.g. URL generation)
- * @param scheduleName name of the searched schedule
- */
-int getScheduleID(char * scheduleName);
-
-/*
- * make a put request, e.g. for creating schedules
- * @param path the URL
- * @param body the JSON body
- * @param jsonVar variable for returns
- */
-int putRequest(char * path, char * body, JSONVar& jsonVar);
-
-/*
- * method for updating/creating a schedule
- * @param scheduleName
- * @param state turn on or off (true/false)
- * @param timeIn specifically formatted time string, at which the schedule shall be executed
- * @param groupName name of the group which shall be affected
- */
-void updateLightSchedule(char * scheduleName, bool state, char * timeIn, char * groupName);
-
-/*
- * method for deleting an existing schedule
- * @param scheduleName name of the schedule to be deleted
- */
-void deleteRequest(char * scheduleName);
 
 /*
  * Helper Function for modulo operation (positive AND negative!!)
@@ -95,21 +45,6 @@ void initRotaryEncoder(int pinA, int pinB, void (*targetFunctionA)(void), void (
 bool jsonVarToSPIFFS(JSONVar& json, char * storePath);
 
 /*
- * connect to the Bridge, i.e. find the IP-Adress
- */
-void connectToBridge();
-
-/*
- * check Connectionparameters (IP and APIKey)
- */
-void checkConnection();
-
-/*
- * configure the APIKey
- */
-void configureAPIKey(int timeout);
-
-/*
  * check Reset values, and in case, start the configuration Panel
  */
 void checkForReset(WiFiManager& manager);
@@ -128,6 +63,9 @@ void updateAlarmDisplay();
 
 void updateRemoteAlarm();
 
+void saveConfigFile();
+
+int dimLights();
 //String serverName = "http://philipshuebridge/api/8LZjhVl65zPrJiqEPTWkmRaggDv1YzJQBxi1GhcZ/groups/";
 
 //irgendein ROOT_CA
@@ -165,21 +103,6 @@ void updateRemoteAlarm();
 "-----END CERTIFICATE-----\n"; */
 
 // Philips HUE Root_ca
-const char * root_ca = \
-"-----BEGIN CERTIFICATE-----\n" \
-"MIICOTCCAd+gAwIBAgIHF4j//m8+sDAKBggqhkjOPQQDAjA+MQswCQYDVQQGEwJO\n" \
-"TDEUMBIGA1UECgwLUGhpbGlwcyBIdWUxGTAXBgNVBAMMEDAwMTc4OGZmZmU2ZjNl\n" \
-"YjAwIhgPMjAxNzAxMDEwMDAwMDBaGA8yMDM4MDEwMTAwMDAwMFowPjELMAkGA1UE\n" \
-"BhMCTkwxFDASBgNVBAoMC1BoaWxpcHMgSHVlMRkwFwYDVQQDDBAwMDE3ODhmZmZl\n" \
-"NmYzZWIwMFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAEQkN8PN9NrJIS7ReGkzxL\n" \
-"RmbQdwL0Wi8gPWCqcALrJ7rccvKDV3GKLIS/snotbX+zUc/Aj+iE6iVPoal2bxFa\n" \
-"JKOBwzCBwDAMBgNVHRMBAf8EAjAAMB0GA1UdDgQWBBTAFfbXZ66ecVwGxdDbnUDX\n" \
-"ypvwKDBsBgNVHSMEZTBjgBTAFfbXZ66ecVwGxdDbnUDXypvwKKFCpEAwPjELMAkG\n" \
-"A1UEBhMCTkwxFDASBgNVBAoMC1BoaWxpcHMgSHVlMRkwFwYDVQQDDBAwMDE3ODhm\n" \
-"ZmZlNmYzZWIwggcXiP/+bz6wMA4GA1UdDwEB/wQEAwIFoDATBgNVHSUEDDAKBggr\n" \
-"BgEFBQcDATAKBggqhkjOPQQDAgNIADBFAiEA1vxgWLiN1SFk3UPDgSBVrITqnkDp\n" \
-"tJb1vDSB6IXTkY8CICyGg3H5H3D+Fq3I5Bt0/LGsx8IRNUpiSF4f0u9PmYkM\n" \
-"-----END CERTIFICATE-----";
 
 
 
