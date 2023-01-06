@@ -23,7 +23,6 @@
 #include "hueAccess.hpp"
 #include "httpRequests.hpp"
 
-
 #define BUTTON_PIN 18
 
 #define ENC_A 17
@@ -32,6 +31,7 @@
 #define ROTARY_BUTTON 16
 //#define BUTTON_TEST 16 // Wird nicht benötigt.
 #define WIFI_RESET_PIN 18 // Auf einen der anderen Pins umlegen.
+#define TIMEZONE "CET-1CEST,M3.5.0/02,M10.5.0/03"
 
 #define JSON_CONFIG_FILE "/test_config.json"
 
@@ -41,35 +41,30 @@
 #define ARDUINO_RUNNING_CORE 1
 #endif
 
-WiFiManager wm;
+// Functions
+void IRAM_ATTR rotaryEncoderTurnISR();
+void IRAM_ATTR rotaryButtonISR();
+void IRAM_ATTR rotaryButtonUPISR();
+void IRAM_ATTR alarmButtonUp();
+void IRAM_ATTR alarmButtonDown();
+void IRAM_ATTR alarmButtonISR();
+void saveConfigCallback();
+void saveParamsCallback();
 
+// Variables
+WiFiManager wm;
 TM1637Display * display2 = NULL; // Must be declared, so that other files can use it.
 volatile int switchlightonce = 0;
 const char* ntp_server = "de.pool.ntp.org";
 
-#define TIMEZONE "CET-1CEST,M3.5.0/02,M10.5.0/03"
-
 struct tm currentTimeData;
 struct tm wakeData;
-volatile int rotaryState = 0;
-volatile int lastButtonDebounceTime = 0;
-volatile int lastButtonDebounceTimeDown = 0;
-volatile int lastButtonDebounceTimeUp = 0;
+
+volatile int alarmRotaryState = 0;
 volatile int displayBrightness = 1;
-volatile int lastRotaryTimeStamp = 0;
-volatile int lastBrightnessValue = 0;
-volatile int lastBrightnessTimeStamp = 0;
-volatile int firstBrightnessRotaryValue = 0;
-volatile int dimValue = 0;
 
-bool determiningDimFactor = false;
-void IRAM_ATTR rotaryEncoderTurnISR();
-void IRAM_ATTR rotaryButtonISR();
-void IRAM_ATTR alarmButtonUp();
-void IRAM_ATTR alarmButtonDown();
-
-void saveConfigCallback();
-void saveParamsCallback();
+volatile dimming_t *dimmingData;
+volatile debouncing_t *debouncingData;
 
 volatile int configuringHours = 0;
 volatile int modifyAlarm = 0; // 0 = no, 1 = currently modifying, 2 = should be changed by Request
@@ -77,20 +72,13 @@ volatile int deleteScheduleNextLoop = 0;
 volatile int downAlarmButtonTimeStamp;
 volatile int upAlarmButtonTimeStamp;
 bool shouldSaveConfig = false;
-
 int errorState = 0;
 
 hw_timer_t * timer = NULL;
 portMUX_TYPE timerMux = portMUX_INITIALIZER_UNLOCKED;
 
 
-// Not needed, API-Key and Bridge IP are automatically put in for the latest values, just dont change them
-/* const char * config_str = "<p> Overwrite API-Key and Bridge-IP Config? </p>" \
-                          "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice1' name='config_selection' value='STD' checked='checked' > <label for='choice1'> Standard </label><br>" \
-                          "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice2' name='config_selection' value='ALT1'> <label for='choice2'> Alternative 1 </label><br>" \
-                          "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice3' name='config_selection' value='ALT2'> <label for='choice3'> Alternative 2 </label><br>" \
-                          "<input style='width: auto; margin: 0 10px 0 10px;' type='radio' id='choice4' name='config_selection' value='ALT3'> <label for='choice4'> Alternative 3 </label><br>"; */
-
+// Tasks
 void TaskTest(void *pvParameters){
   (void) pvParameters;
   int counter = 0;
@@ -138,15 +126,18 @@ void TaskAlarmBlinkDisplay(void *pvParameters) {
   (void) pvParameters;
   for(;;){
     if(modifyAlarm == 1){
-      display2->setBrightness(3);
-      display2->showNumberDecEx(rotaryState, 0b01000000, true);
+      for(int i = 0; i < 5; i++){
+        display2->setBrightness(3);
+        display2->showNumberDecEx(alarmRotaryState, 0b01000000, true);
+        vTaskDelay(60 / portTICK_PERIOD_MS);
+      }
+      Serial.println(alarmRotaryState, DEC);
     
-      Serial.println(rotaryState, DEC);
-    
-      vTaskDelay(300 / portTICK_PERIOD_MS);
-      display2->setBrightness(1);
-      display2->showNumberDecEx(rotaryState, 0b01000000, true);
-      vTaskDelay(300 / portTICK_PERIOD_MS);
+      for(int i = 0; i < 5; i++){
+        display2->setBrightness(1);
+        display2->showNumberDecEx(alarmRotaryState, 0b01000000, true);
+        vTaskDelay(60 / portTICK_PERIOD_MS);
+      }
     } else {
       
       if(xSemaphoreTake(blinkSemaphore, portMAX_DELAY) == pdTRUE){
@@ -179,19 +170,24 @@ void TaskButtonHandler(void *pvParameters) {
           switchlightonce = 0;
       }
 
-      if(dimValue != 0){
+      if(dimmingData->dimValue != 0){
         dimLights();
-        dimValue = 0;
+        dimmingData->dimValue = 0;
       }
     }
   }
 }
+
+
 void setup(void){
   /*
    * Größtenteils SPI/WiFi Init  
    */
   //bool forceConfig = false;
   display2 = new TM1637Display(CLK_PIN, DIO_PIN);
+
+  dimmingData = new dimming_t; 
+  debouncingData = new debouncing_t;
   
   totalApiKeyPath = (char *) malloc(sizeof(char)*100);
   apiKey = (char *) malloc(sizeof(char)*40);
@@ -219,11 +215,7 @@ void setup(void){
   if((!validBridgeIP) | (!apiKeyValid)){
     troubleshootConnection();
   }
-  
-  /*
-   * Ab hier auch der Rest (die alte setupFunktion);
-   */
-  
+ 
   // Zeiteinstellung
   
   configureTime();
@@ -289,7 +281,7 @@ void saveConfigFile(){
   jsonDoc["apiKey"] = apiKey;
   jsonDoc["bridgeIP"] = bridgeIP;
   jsonDoc["controlledGroupName"]  = controlledGroupName;
-  jsonDoc["alarmTime"]   = rotaryState;
+  jsonDoc["alarmTime"]   = alarmRotaryState;
   File configFile = SPIFFS.open(JSON_CONFIG_FILE, "w");
   if(!configFile){
     Serial.println("Error opening JSON Config file");
@@ -373,7 +365,7 @@ bool loadConfigFile()
           strcpy(controlledGroupName, json["controlledGroupName"]);
           strcpy(bridgeIP, json["bridgeIP"]);
           if(json.hasOwnProperty("alarmTime")){
-            rotaryState = json["alarmTime"];
+            alarmRotaryState = json["alarmTime"];
           }
           // construct Api path
           generateTotalApiKeyPath();
@@ -448,73 +440,92 @@ int calcOffset(int input){
 // weil alle Methoden, die im Interrupt ausgeführt werden das IRAM_ATTR Attribut benötigen.
 void IRAM_ATTR buttonISR(){
   int timeStamp = millis();
-  if(timeStamp > lastButtonDebounceTime + 500){
+  if(timeStamp > debouncingData->lastButtonDebounceTime + 500){
     if(modifyAlarm){
       modifyAlarm = 0;
     } else {
       switchlightonce = 1;
       Serial.println("ButtonTestISR");
     }
-    lastButtonDebounceTime = millis();
+    debouncingData->lastButtonDebounceTime = millis();
     xSemaphoreGive(buttonSemaphore);
   }
 }
 
+volatile int rotaryButtonTS = 0;
 void IRAM_ATTR rotaryButtonISR(){
   int timeStamp = millis();
-  if(timeStamp > lastButtonDebounceTime + 500){
-    if(modifyAlarm != 0){
-      if(configuringHours == 1){
-        configuringHours = 0;
+  rotaryButtonTS = millis();
+  if((timeStamp > debouncingData->lastButtonDebounceTime + 100) && (timeStamp > debouncingData->lastRotaryTimeStamp + 200)){
+    
+    debouncingData->lastButtonDebounceTime = millis();
+    
+    
+    attachInterrupt(digitalPinToInterrupt(ROTARY_BUTTON), rotaryButtonUPISR, RISING);
+  }
+}
+
+void IRAM_ATTR rotaryButtonUPISR(){
+    int timeStamp = millis();
+    if(timeStamp - rotaryButtonTS > 50){
+      Serial.println("Rotary Button ISR");
+      if(modifyAlarm != 0){
+        if(configuringHours == 1){
+          configuringHours = 0;
+        } else {
+          configuringHours = 1;
+        }
       } else {
-        configuringHours = 1;
+        displayBrightness = (displayBrightness + 1) % 5;
       }
-    } else {
-      displayBrightness = (displayBrightness + 1) % 5;
-    }
-    lastButtonDebounceTime = millis();
-  }
-  
-}
-
-void IRAM_ATTR alarmButtonDown(){
-  int timeStamp = millis();
-  if(timeStamp > lastButtonDebounceTimeUp + 500){
-    lastButtonDebounceTimeUp = millis();
-    downAlarmButtonTimeStamp = millis();
-    attachInterrupt(digitalPinToInterrupt(ALARM_SWITCH_BUTTON), alarmButtonUp, FALLING);
-  }
-}
-
-void IRAM_ATTR alarmButtonUp(){
-  upAlarmButtonTimeStamp = millis();
-  if(upAlarmButtonTimeStamp > lastButtonDebounceTimeDown + 500){
-    Serial.println("AlarmButton");
-    switch(modifyAlarm){
-      case 0: modifyAlarm = 1; break;
-      case 1: modifyAlarm = 2; break;
-      case 2: modifyAlarm = 2; break;
-      default: break;
-    }
-    if((upAlarmButtonTimeStamp - downAlarmButtonTimeStamp) >= 3000){ //Long Press
-      //Delete Request!
-      deleteScheduleNextLoop = 1;
-      modifyAlarm = 0;
       
     }
-    attachInterrupt(digitalPinToInterrupt(ALARM_SWITCH_BUTTON), alarmButtonDown, RISING);
-    lastButtonDebounceTimeDown = millis();
-    xSemaphoreGive(buttonSemaphore);
+    debouncingData->lastButtonDebounceTime = millis();
+    attachInterrupt(digitalPinToInterrupt(ROTARY_BUTTON), rotaryButtonISR, FALLING);
+    //registerButton(ROTARY_BUTTON,FALLING, rotaryButtonISR, INPUT);
+}
+
+void IRAM_ATTR alarmButtonISR(){
+  if(digitalRead(ALARM_SWITCH_BUTTON) == HIGH){
+    //Serial.print("D");
+    debouncingData->lastButtonDebounceTimeUp = millis();
+    downAlarmButtonTimeStamp = millis();
+  } else {
+    upAlarmButtonTimeStamp = millis();
+    if((upAlarmButtonTimeStamp > debouncingData->lastButtonDebounceTimeDown + 500) & (upAlarmButtonTimeStamp > debouncingData->lastButtonDebounceTimeUp)){
+      //Serial.println("AlarmButton");
+      switch(modifyAlarm){
+        case 0: modifyAlarm = 1; break;
+        case 1: modifyAlarm = 2; break;
+        case 2: modifyAlarm = 2; break;
+        default: break;
+      }
+      if(((upAlarmButtonTimeStamp - downAlarmButtonTimeStamp) >= 3000) && ((upAlarmButtonTimeStamp - downAlarmButtonTimeStamp) <= 10000)){ //Long Press
+        //Serial.print("UpTimestamp: ");
+        //Serial.println(upAlarmButtonTimeStamp);
+        //Serial.print("DownTimestamp: ");
+        //Serial.println(downAlarmButtonTimeStamp);
+        //Delete Request!
+        //Serial.println("Delete next loop");
+        deleteScheduleNextLoop = 1;
+        modifyAlarm = 0;
+        
+      }
+      
+      
+      debouncingData->lastButtonDebounceTimeDown = millis();
+      xSemaphoreGiveFromISR(buttonSemaphore, NULL);
+    } 
   }
 }
 
 void IRAM_ATTR buttonTest(){
   int timeStamp = millis();
-  if(timeStamp > lastButtonDebounceTime + 500){
+  if(timeStamp > debouncingData->lastButtonDebounceTime + 500){
     Serial.println("ButtonTest!");
     Serial.println(timeStamp);
     switchlightonce = 1;
-    lastButtonDebounceTime = millis();
+    debouncingData->lastButtonDebounceTime = millis();
   }
 }
 
@@ -600,9 +611,10 @@ void registerInputPeripherals(){
   Serial.println("Register Buttons");
   registerButton(BUTTON_PIN, RISING, buttonISR, INPUT_PULLDOWN);
   Serial.println("Registered Button_Pin");
-  registerButton(ROTARY_BUTTON,FALLING, rotaryButtonISR, INPUT_PULLUP);
+  registerButton(ROTARY_BUTTON,FALLING, rotaryButtonISR, INPUT);
   Serial.println("Registered Rotary BUtton");
-  registerButton(ALARM_SWITCH_BUTTON, RISING, alarmButtonDown, INPUT_PULLDOWN);
+  registerButton(ALARM_SWITCH_BUTTON, CHANGE, alarmButtonISR, INPUT_PULLDOWN);
+  //registerButton(ALARM_SWITCH_BUTTON, RISING, alarmButtonDown, INPUT_PULLDOWN);
   Serial.println("Registered Alarm Button");
   initRotaryEncoder(ENC_B, ENC_A, rotaryEncoderTurnISR, CHANGE);
   Serial.println("Registered Encoders");
@@ -613,28 +625,28 @@ void registerInputPeripherals(){
 
 void updateAlarmDisplay(){
   display2->setBrightness(3);
-  display2->showNumberDecEx(rotaryState, 0b01000000, true);
+  display2->showNumberDecEx(alarmRotaryState, 0b01000000, true);
   
-  Serial.println(rotaryState, DEC);
+  Serial.println(alarmRotaryState, DEC);
   
   delay(800);
   display2->setBrightness(1);
-  display2->showNumberDecEx(rotaryState, 0b01000000, true);
+  display2->showNumberDecEx(alarmRotaryState, 0b01000000, true);
 }
 
 void updateRemoteAlarm(){
   //Update Alarm
   char * timeString = (char *) malloc(sizeof(char)*21);
   getLocalTime(&wakeData);
-  if( (rotaryState/100 < 24) & (rotaryState/100 >= 0) & (rotaryState%100 < 60) & (rotaryState%100 >= 0)){
-    wakeData.tm_hour = rotaryState/100;
-    wakeData.tm_min = rotaryState%100;
+  if( (alarmRotaryState/100 < 24) & (alarmRotaryState/100 >= 0) & (alarmRotaryState%100 < 60) & (alarmRotaryState%100 >= 0)){
+    wakeData.tm_hour = alarmRotaryState/100;
+    wakeData.tm_min = alarmRotaryState%100;
     time_t wakeTime = mktime(&wakeData);
     time_t currTime = mktime(&currentTimeData);
     if(difftime(wakeTime, currTime) < 0){
      wakeData.tm_mday += 1;
     }
-    snprintf(timeString, 21, "%d-%02d-%02dT%02d:%02d:00", wakeData.tm_year+1900,wakeData.tm_mon+1, wakeData.tm_mday, rotaryState/100, rotaryState%100);
+    snprintf(timeString, 21, "%d-%02d-%02dT%02d:%02d:00", wakeData.tm_year+1900,wakeData.tm_mon+1, wakeData.tm_mday, alarmRotaryState/100, alarmRotaryState%100);
     updateLightSchedule("testSchedule1", true, timeString, controlledGroupName);
     saveConfigFile();
     modifyAlarm = 0;
@@ -656,12 +668,12 @@ int mod(int a, int b)
 }
 
 void IRAM_ATTR dimLightInterrupt(){
-  lastBrightnessTimeStamp = millis();
-  lastBrightnessValue = rotaryState;
+  dimmingData->lastBrightnessRotaryValue = dimmingData->dimRotaryState;
   timerAlarmDisable(timer);
   timerStop(timer);
-  determiningDimFactor = false;
-  dimValue = lastBrightnessValue - firstBrightnessRotaryValue;
+  dimmingData->determiningDimFactor = false;
+  dimmingData->dimValue = dimmingData->lastBrightnessRotaryValue - dimmingData->firstBrightnessRotaryValue;
+  dimmingData->dimValue = constrain(dimmingData->dimValue, -50, 50);
   xSemaphoreGiveFromISR(buttonSemaphore, NULL);
   Serial.println("dimInterrupt");
 }
@@ -682,30 +694,54 @@ void IRAM_ATTR rotaryEncoderTurnISR()
 
   // Update counter if encoder has rotated a full indent, that is at least 4 steps
   if( encval > 3 ) {        // Four steps forward
-    if(configuringHours){
-      rotaryState = rotaryState + 100;
-    } else {
-      rotaryState++;              // Increase counter
-      rotaryState = (rotaryState/100)*100 + (rotaryState%100)%60;
+    if(modifyAlarm){
+      if(configuringHours){
+        alarmRotaryState = (alarmRotaryState + 100) % 2400;
+      } else {
+        alarmRotaryState++;              // Increase counter
+        if(alarmRotaryState % 100 == 60){
+          alarmRotaryState = alarmRotaryState + 40;
+          if(alarmRotaryState >= 2400) {
+            alarmRotaryState = alarmRotaryState % 100;
+          }
+        } else {
+          alarmRotaryState = (alarmRotaryState/100)*100 + (alarmRotaryState%100)%60;
+        }
+      }
+    }else{
+      dimmingData->dimRotaryState++;  
     }
     encval = 0;
   }
   else if( encval < -3 ) {  // Four steps backwards
-   if(configuringHours){
-     rotaryState = rotaryState - 100; 
-   }else{
-     rotaryState--;
-     rotaryState = (rotaryState/100)*100 + mod((rotaryState%100),60);
-   }                  // Decrease counter
-   encval = 0;
+    if(modifyAlarm){
+       if(configuringHours){
+         alarmRotaryState = mod(alarmRotaryState - 100, 2400); 
+       }else{
+         if((alarmRotaryState % 100 == 0) && alarmRotaryState != 0){
+          alarmRotaryState = alarmRotaryState - 41;
+         } else if(alarmRotaryState == 0){
+          alarmRotaryState = 2359;
+         } else {
+          alarmRotaryState--;
+         }
+         //alarmRotaryState = (alarmRotaryState/100)*100 + mod((alarmRotaryState%100),60);
+       }                  // Decrease counter
+    } else {
+      dimmingData->dimRotaryState--;
+    }
+    encval = 0;
   }
 
-  lastRotaryTimeStamp = millis();
+  debouncingData->lastRotaryTimeStamp = millis();
   
   if(!modifyAlarm){
-    if (!determiningDimFactor){
-      determiningDimFactor = true;
-      firstBrightnessRotaryValue = rotaryState;
+    if (!dimmingData->determiningDimFactor){
+      dimmingData->determiningDimFactor = true;
+      //dimmingData->firstBrightnessRotaryValue = dimRotaryState;
+      
+      dimmingData->firstBrightnessRotaryValue = 0;
+      dimmingData->dimRotaryState = 0;
       timer = timerBegin(0, 80, true);
       timerAttachInterrupt(timer, &dimLightInterrupt, true);
       timerAlarmWrite(timer, 1000000, true);
@@ -738,7 +774,7 @@ int dimLights(){
      * Create Post Request Body
      */
     
-    httpRequestData = String("{ \"bri_inc\":" + String(dimValue*5) + "}");
+    httpRequestData = String("{ \"bri_inc\":" + String(dimmingData->dimValue*5) + "}");
     
     int id = getGroupID(controlledGroupName);
     
@@ -769,7 +805,7 @@ int dimLights(){
     }
     
     http.end();
-    dimValue = 0;
+    dimmingData->dimValue = 0;
   }
   else {
     Serial.println("WiFi Disconnected");
@@ -832,12 +868,6 @@ int switchLights(){
 }
 
 
-
-
-
-
-
-
 /*
  * param
  * pin: GPIO number
@@ -854,10 +884,3 @@ int registerButton(uint8_t pin, int event, void (*targetFunction)(void), int mod
   //Serial.println("Interrupt attached");
   return 0;
 }
-
-
-
-
-
-
-

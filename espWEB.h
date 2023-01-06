@@ -8,6 +8,24 @@
 #include <WiFiManager.h>
 #include <Arduino_JSON.h>
 
+
+
+typedef struct{
+  int lastButtonDebounceTime = 0;
+  int lastButtonDebounceTimeDown = 0;
+  int lastButtonDebounceTimeUp = 0;
+  int lastRotaryTimeStamp = 0;
+} debouncing_t;
+
+typedef struct{
+  int lastBrightnessRotaryValue;
+  int firstBrightnessRotaryValue;
+  int dimValue;
+  bool determiningDimFactor = false;
+  int dimRotaryState = 0;
+} dimming_t;
+
+
 extern TM1637Display * display2; //(CLK_PIN, DIO_PIN);
 
 /*

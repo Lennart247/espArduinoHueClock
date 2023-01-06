@@ -18,14 +18,14 @@ int getGroupID(char * groupName){
   char * groupPath = (char*) malloc(sizeof(char)*100);
   strcpy(groupPath, totalApiKeyPath);
   strcat(groupPath, "groups/");
-  Serial.print("getGroupID, path: ");
-  Serial.println(groupPath);
+  //Serial.print("getGroupID, path: ");
+  //Serial.println(groupPath);
   http.begin(groupPath); 
   http.GET();
   String payload = http.getString();
   http.end();
-  Serial.print("Payload: ");
-  Serial.println(payload);
+  //Serial.print("Payload: ");
+  //Serial.println(payload);
 
   /*
    * Convert to JSON
@@ -33,22 +33,25 @@ int getGroupID(char * groupName){
   JSONVar myObject = JSON.parse(payload);
   if(JSON.typeof(myObject) == "undefined") {
     Serial.println("Parsing input failed, getGroupID!");
+    Serial.print("getGroupID, path: ");
+    Serial.println(groupPath);
+    Serial.println(payload);
     return 0;
   }
-  Serial.print("JSON Object = ");
-  Serial.println(myObject);
+  //Serial.print("JSON Object = ");
+  //Serial.println(myObject);
   int index = 1;
-  Serial.println(myObject.keys());
+  //Serial.println(myObject.keys());
   
   /*
    * Iterate over all Device groups until correct one is found
    */
   while(index < MAX_DEVICE_GROUPS){
-    Serial.print(index);
-    Serial.println(myObject[String(index)]);
+    //Serial.print(index);
+    //Serial.println(myObject[String(index)]);
     if(!strcmp(myObject[String(index)]["name"],groupName)){
-      Serial.print("Korrekte ID ist: ");
-      Serial.println(index, DEC);
+      //Serial.print("Korrekte ID ist: ");
+      //Serial.println(index, DEC);
       break; 
     }
     index++;
@@ -60,8 +63,8 @@ int getGroupID(char * groupName){
   if(index == MAX_DEVICE_GROUPS){
     Serial.println("Keine Gruppe mit dem Namen gefunden!"); 
   }else{
-    Serial.print("Korrekte ID ist: ");
-    Serial.println(index, DEC);
+    //Serial.print("Korrekte ID ist: ");
+    //Serial.println(index, DEC);
     
   }
   free(groupPath);
@@ -81,7 +84,7 @@ int getScheduleID(char * scheduleName){
   http.begin(path);
   http.GET();
   String payload = http.getString();  
-  Serial.println(payload);
+  //Serial.println(payload);
   http.end();
 
   JSONVar myObject = JSON.parse(payload);
@@ -91,11 +94,11 @@ int getScheduleID(char * scheduleName){
     //Serial.println(myObject[String(index)]);
     //if(myObject[String(index)]){ // Geht wahrscheinlich nicht.
     if(strcmp(JSON.stringify(myObject[String(index)]).c_str(), "null")){  
-      Serial.println(myObject[String(index)]);
-      Serial.println(myObject[String(index)]["name"]);
+      //Serial.println(myObject[String(index)]);
+      //Serial.println(myObject[String(index)]["name"]);
       if(!strcmp(myObject[String(index)]["name"], scheduleName)){
-        Serial.print("Korrekte Schedule ID ist: ");
-        Serial.println(index, DEC);
+        //Serial.print("Korrekte Schedule ID ist: ");
+        //Serial.println(index, DEC);
         break;
       }
     }
@@ -108,10 +111,10 @@ int getScheduleID(char * scheduleName){
 }
 
 void updateLightSchedule(char * scheduleName, bool state, char * timeIn, char * groupName){
-  Serial.println("update get schedule ID for");
-  Serial.println(scheduleName);
+  //Serial.println("update get schedule ID for");
+  //Serial.println(scheduleName);
   int schedID = getScheduleID(scheduleName);
-  Serial.println("Got schedule ID");
+  //Serial.println("Got schedule ID");
   char * path = (char *) malloc(sizeof(char) * 100);
   strcpy(path, totalApiKeyPath); 
   strcat(path, "schedules/");

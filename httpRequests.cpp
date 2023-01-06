@@ -2,6 +2,7 @@
 
 void deleteRequest(char * scheduleName){
   int schedID = getScheduleID(scheduleName);
+  Serial.println("Trying to delete Schedule");
   if(schedID == 0){
     Serial.println("ScheduleID doesn't exist!");
   }else{
@@ -12,8 +13,8 @@ void deleteRequest(char * scheduleName){
     strcat(deletePath, String(schedID).c_str());
     http.begin(deletePath);
     http.sendRequest("DELETE");
-    Serial.print("Delete result: ");
-    Serial.println(http.getString());
+    //Serial.print("Delete result: ");
+    //Serial.println(http.getString());
     http.end();
     free(deletePath);
   }
@@ -23,13 +24,15 @@ int putRequest(char * path, char * body, JSONVar& jsonVar){
   HTTPClient http;
   http.begin(path);
   http.PUT(body);
-  Serial.println(body);
+  
   String payload = http.getString();
-  Serial.println(payload);
+  
   jsonVar = JSON.parse(payload);
 
   if(JSON.typeof(jsonVar) == "undefined") {
     Serial.println("Put Request Parsing input failed!");
+    Serial.println(body);
+    Serial.println(payload);
     return 1; // Try again?
   }
   http.end();
@@ -41,7 +44,7 @@ int postRequest(char * path, char * body, JSONVar& jsonVar){
   http.begin(path);
   http.POST(body);
   String payload = http.getString();
-  Serial.println(payload);
+  //Serial.println(payload);
   char * result = (char *) malloc(sizeof(char)*300);
   strcpy(result, payload.c_str()); // copy to remove error [
   char * cleanedResult = (char *) malloc(sizeof(char) *300);
@@ -52,6 +55,7 @@ int postRequest(char * path, char * body, JSONVar& jsonVar){
   http.end();
   if(JSON.typeof(jsonVar) == "undefined") {
     Serial.println("Post Parsing input failed!");
+    Serial.println(payload);
     return 1;
   }
   free(cleanedResult);
@@ -76,7 +80,7 @@ int getRequest(const char * path, JSONVar& inVar, bool https){
   }
   http.GET();
   String payload = http.getString();
-  Serial.println(payload);
+  //Serial.println(payload);
   /*
    * JSON Parsing
    */
