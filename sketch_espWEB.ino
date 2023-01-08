@@ -173,6 +173,7 @@ void TaskButtonHandler(void *pvParameters) {
       if(dimmingData->dimValue != 0){
         dimLights();
         dimmingData->dimValue = 0;
+        dimmingData->dimRotaryState = 0;
       }
     }
   }
@@ -667,17 +668,18 @@ int mod(int a, int b)
    return ret;
 }
 
+/*
 void IRAM_ATTR dimLightInterrupt(){
   dimmingData->lastBrightnessRotaryValue = dimmingData->dimRotaryState;
   timerAlarmDisable(timer);
   timerStop(timer);
   dimmingData->determiningDimFactor = false;
   dimmingData->dimValue = dimmingData->lastBrightnessRotaryValue - dimmingData->firstBrightnessRotaryValue;
-  dimmingData->dimValue = constrain(dimmingData->dimValue, -50, 50);
+  dimmingData->dimValue = constrain(dimmingData->dimValue, -255, 255);
   xSemaphoreGiveFromISR(buttonSemaphore, NULL);
   Serial.println("dimInterrupt");
 }
-
+*/
 void IRAM_ATTR rotaryEncoderTurnISR()
 {
   
@@ -709,7 +711,7 @@ void IRAM_ATTR rotaryEncoderTurnISR()
         }
       }
     }else{
-      dimmingData->dimRotaryState++;  
+      dimmingData->dimRotaryState = dimmingData->dimRotaryState + 15;  
     }
     encval = 0;
   }
@@ -728,7 +730,7 @@ void IRAM_ATTR rotaryEncoderTurnISR()
          //alarmRotaryState = (alarmRotaryState/100)*100 + mod((alarmRotaryState%100),60);
        }                  // Decrease counter
     } else {
-      dimmingData->dimRotaryState--;
+      dimmingData->dimRotaryState = dimmingData->dimRotaryState - 15;
     }
     encval = 0;
   }
@@ -737,17 +739,15 @@ void IRAM_ATTR rotaryEncoderTurnISR()
   
   if(!modifyAlarm){
     if (!dimmingData->determiningDimFactor){
-      dimmingData->determiningDimFactor = true;
-      //dimmingData->firstBrightnessRotaryValue = dimRotaryState;
-      
-      dimmingData->firstBrightnessRotaryValue = 0;
-      dimmingData->dimRotaryState = 0;
-      timer = timerBegin(0, 80, true);
-      timerAttachInterrupt(timer, &dimLightInterrupt, true);
-      timerAlarmWrite(timer, 1000000, true);
-      timerAlarmEnable(timer);
+      //timer = timerBegin(0, 80, true);
+      //timerAttachInterrupt(timer, &dimLightInterrupt, true);
+      //timerAlarmWrite(timer, 1000000, true);
+      //timerAlarmEnable(timer);
+      dimmingData->dimValue = dimmingData->dimRotaryState;
+      dimmingData->dimValue = constrain(dimmingData->dimValue, -255, 255);
+      xSemaphoreGiveFromISR(buttonSemaphore, NULL);
     } else {
-      timerRestart(timer);
+      //timerRestart(timer);
       
     }
   }
@@ -774,18 +774,18 @@ int dimLights(){
      * Create Post Request Body
      */
     
-    httpRequestData = String("{ \"bri_inc\":" + String(dimmingData->dimValue*5) + "}");
+    httpRequestData = String("{ \"bri_inc\":" + String(dimmingData->dimValue) + "}");
     
     int id = getGroupID(controlledGroupName);
     
     String serverPath = String(totalApiKeyPath) +"groups/" + String(id) + "/action";
     
-    Serial.print("ID: ");
-    Serial.println(id, DEC);
-    Serial.print("Pfad: ");
-    Serial.println(serverPath);
-    Serial.print("Wert: ");
-    Serial.println(httpRequestData);
+    //Serial.print("ID: ");
+    //Serial.println(id, DEC);
+    //Serial.print("Pfad: ");
+    //Serial.println(serverPath);
+    //Serial.print("Wert: ");
+    //Serial.println(httpRequestData);
     
     http.begin(serverPath.c_str());
     int httpResponseCode = http.PUT(httpRequestData); //Do actual Request to API
@@ -793,9 +793,9 @@ int dimLights(){
     if (httpResponseCode>0) {
       String payload = http.getString();
 
-      Serial.print("HTTP Response code: ");
-      Serial.println(httpResponseCode);
-      Serial.println(payload);
+      //Serial.print("HTTP Response code: ");
+      //Serial.println(httpResponseCode);
+      //Serial.println(payload);
       return 0;
     }
     else {
