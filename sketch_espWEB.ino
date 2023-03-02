@@ -339,12 +339,13 @@ bool loadConfigFile()
       // The file exists, reading and loading
       Serial.println("reading config file");
       File configFile = SPIFFS.open(JSON_CONFIG_FILE, "r");
-      if (configFile)
+      if (configFile && (configFile.size() != 0))
       {
         Serial.println("Opened configuration file");
         //StaticJsonDocument<512> json;
         Serial.print("Size of loaded config File: ");
         Serial.println(configFile.size());
+
         char * jsonStringBuffer = (char *) malloc(configFile.size());
         configFile.readBytes(jsonStringBuffer, configFile.size());
         
